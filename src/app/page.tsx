@@ -115,17 +115,17 @@ export default function HomePage() {
 
             {contentType && contentType.includes('text/html') && iframeSrc && (
                 <div style={{marginTop: 12}}>
-                    <strong>HTML プレビュー（スクリプトは実行されません）</strong>
+                    <strong>HTML プレビュー</strong>
                     <div style={{border: '1px solid #ddd', marginTop: 8}}>
                         <iframe src={iframeSrc} style={{width: '100%', height: 600}}
-                                sandbox="allow-forms allow-popups allow-modals allow-popups-to-escape-sandbox"></iframe>
+                                sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-popups-to-escape-sandbox"></iframe>
                     </div>
                 </div>
             )}
 
             {bodyText && (
                 <div style={{marginTop: 12}}>
-                    <strong>ボディ（テキスト/JSONなど）</strong>
+                    <strong>ボディ</strong>
                     <pre style={{whiteSpace: 'pre-wrap', background: '#f6f6f6', padding: 8}}>{bodyText}</pre>
                 </div>
             )}
@@ -136,11 +136,6 @@ export default function HomePage() {
                     <a href={iframeSrc} download>ダウンロード</a>
                 </div>
             )}
-
-
-            <footer style={{marginTop: 24, color: '#666'}}>
-                <small>注意: 外部サイトの JavaScript を安全に実行しないよう iframe を sandbox しています。</small>
-            </footer>
         </main>
     );
 }

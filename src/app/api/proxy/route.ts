@@ -49,6 +49,24 @@ function rewriteHtml(baseUrl: string, html: string) {
         }
     }
 
+    html = html.replace(/(fetch\s*\(['"])(.*?)['"]\s*\)/gms, (_, p1, p2) => {
+        try {
+            const prox = resolveAndProxy(p2);
+            return `${p1}${prox}"`;
+        } catch {
+            return `${p1}${p2}"`;
+        }
+    });
+
+    html = html.replace(/(open\s*\(['"](GET|POST)['"]\s*,\s*['"])(.*?)['"]\s*,\s*\)/gmis, (_, p1, p2, p3) => {
+        try {
+            const prox = resolveAndProxy(p3);
+            return `${p1}${p2}','${prox}',`;
+        } catch {
+            return `${p1}${p2}','${p3}',`;
+        }
+    });
+
     // srcset handling: multiple comma-separated entries url [space descriptor]
     html = html.replace(/srcset\s*=\s*"(.*?)"/gms, (_, val) => {
         try {
@@ -208,7 +226,20 @@ async function handleProxy(req: NextRequest) {
 
 // もし CSP を削除するとJSが動くようになるが危険。
 // 代わりに「非常に緩いCSP」を設定することも可能（任意）
-        if (resHeaders.has('content-security-policy')) resHeaders.delete('content-security-policy');
+        const newCSP = `
+    default-src 'self' data: http: https: ws: wss: * 'unsafe-inline' 'unsafe-eval'; 
+    connect-src 'self' data: http: https: ws: wss: *;
+    script-src 'self' data: http: https: 'unsafe-inline' 'unsafe-eval';
+    style-src 'self' data: http: https: 'unsafe-inline';
+    img-src 'self' data: http: https: *;
+    media-src 'self' data: http: https: *;
+`;
+// 複数スペースと改行を削除して1行にする
+        const cleanCSP = newCSP.replace(/\s+/g, ' ').trim();
+
+        resHeaders.set('content-security-policy', cleanCSP);
+
+        //if (resHeaders.has('content-security-policy')) resHeaders.delete('content-security-policy');
 
 // Content-Encoding を削除（Brotli/gzip等を外す）
         if (resHeaders.has('content-encoding')) resHeaders.delete('content-encoding');
