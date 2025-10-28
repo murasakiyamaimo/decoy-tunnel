@@ -1,65 +1,146 @@
-import Image from "next/image";
+'use client';
+import React, {useState} from 'react';
 
-export default function Home() {
-  return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
-  );
+
+export default function HomePage() {
+    const [url, setUrl] = useState('');
+    const [loading, setLoading] = useState(false);
+    const [status, setStatus] = useState<number | null>(null);
+    const [headers, setHeaders] = useState<Record<string, string> | null>(null);
+    const [bodyText, setBodyText] = useState<string | null>(null);
+    const [contentType, setContentType] = useState<string | null>(null);
+    const [iframeSrc, setIframeSrc] = useState<string | null>(null);
+    const [error, setError] = useState<string | null>(null);
+
+
+    async function handleFetch(e?: React.FormEvent) {
+        e?.preventDefault();
+        setError(null);
+        setStatus(null);
+        setHeaders(null);
+        setBodyText(null);
+        setIframeSrc(null);
+        setContentType(null);
+
+
+        if (!url) {
+            setError('URL を入力してください');
+            return;
+        }
+
+
+        setLoading(true);
+        try {
+// URL はクエリパラメータで送る（エンコード）
+            const res = await fetch(`/api/proxy?url=${encodeURIComponent(url)}`);
+            setStatus(res.status);
+
+
+            const hdrs: Record<string, string> = {};
+            res.headers.forEach((v, k) => (hdrs[k] = v));
+            setHeaders(hdrs);
+
+
+            const ct = res.headers.get('content-type') || '';
+            setContentType(ct);
+
+
+// HTML の場合は blob を作って sandboxed iframe に流し込む（スクリプトは実行しない）
+            if (ct.includes('text/html')) {
+                const text = await res.text();
+                const blob = new Blob([text], {type: 'text/html'});
+                const blobUrl = URL.createObjectURL(blob);
+                setIframeSrc(blobUrl);
+                setBodyText(null);
+            } else if (ct.startsWith('text/') || ct.includes('json')) {
+                const text = await res.text();
+                setBodyText(text);
+            } else {
+// バイナリ等はダウンロードリンクとして扱う
+                const arrayBuf = await res.arrayBuffer();
+                const blob = new Blob([arrayBuf], {type: ct || 'application/octet-stream'});
+                const blobUrl = URL.createObjectURL(blob);
+                setBodyText(`ダウンロード: ${blobUrl}`);
+                setIframeSrc(blobUrl);
+            }
+        } catch (err: any) {
+            console.error(err);
+            setError(String(err?.message ?? err));
+        } finally {
+            setLoading(false);
+        }
+    }
+
+
+    return (
+        <main style={{padding: 24, fontFamily: 'system-ui, sans-serif', maxWidth: 980, margin: '0 auto'}}>
+            <h1>URL プロキシ / 中継デモ</h1>
+            <p>ブラウザからアクセスして、ここに対象の URL を入力するとサーバ側で取得して結果を表示します。</p>
+
+
+            <form onSubmit={handleFetch} style={{display: 'flex', gap: 8, marginBottom: 12}}>
+                <input
+                    type="url"
+                    placeholder="https://example.com"
+                    value={url}
+                    onChange={(e) => setUrl(e.target.value)}
+                    style={{flex: 1, padding: 8, fontSize: 16}}
+                />
+                <button type="submit" disabled={loading} style={{padding: '8px 12px'}}>
+                    {loading ? '取得中...' : '取得'}
+                </button>
+            </form>
+
+            {error && <div style={{color: 'crimson'}}>{error}</div>}
+
+
+            {status !== null && (
+                <div style={{marginTop: 12}}>
+                    <strong>ステータス:</strong> {status}
+                </div>
+            )}
+
+
+            {headers && (
+                <div style={{marginTop: 8}}>
+                    <strong>ヘッダ:</strong>
+                    <pre style={{
+                        whiteSpace: 'pre-wrap',
+                        background: '#f6f6f6',
+                        padding: 8
+                    }}>{JSON.stringify(headers, null, 2)}</pre>
+                </div>
+            )}
+
+
+            {contentType && contentType.includes('text/html') && iframeSrc && (
+                <div style={{marginTop: 12}}>
+                    <strong>HTML プレビュー（スクリプトは実行されません）</strong>
+                    <div style={{border: '1px solid #ddd', marginTop: 8}}>
+                        <iframe src={iframeSrc} style={{width: '100%', height: 600}}
+                                sandbox="allow-forms allow-popups allow-modals allow-popups-to-escape-sandbox"></iframe>
+                    </div>
+                </div>
+            )}
+
+            {bodyText && (
+                <div style={{marginTop: 12}}>
+                    <strong>ボディ（テキスト/JSONなど）</strong>
+                    <pre style={{whiteSpace: 'pre-wrap', background: '#f6f6f6', padding: 8}}>{bodyText}</pre>
+                </div>
+            )}
+
+
+            {iframeSrc && contentType && !contentType.includes('text/html') && (
+                <div style={{marginTop: 8}}>
+                    <a href={iframeSrc} download>ダウンロード</a>
+                </div>
+            )}
+
+
+            <footer style={{marginTop: 24, color: '#666'}}>
+                <small>注意: 外部サイトの JavaScript を安全に実行しないよう iframe を sandbox しています。</small>
+            </footer>
+        </main>
+    );
 }
