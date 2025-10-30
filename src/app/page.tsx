@@ -30,38 +30,31 @@ export default function HomePage() {
 
 
         setLoading(true);
+        const proxiedUrl = `/api/proxy?url=${encodeURIComponent(url)}`;
+
         try {
-// URL はクエリパラメータで送る（エンコード）
-            const res = await fetch(`/api/proxy?url=${encodeURIComponent(url)}`);
+            // ステータスとヘッダーを取得するために、プロキシエンドポイントを一度 fetch する（ボディは読み込まない）
+            const res = await fetch(proxiedUrl, { method: 'HEAD' }); // HEADリクエストで十分
+
+            // ステータスとヘッダーの表示ロジックはそのまま
             setStatus(res.status);
-
-
             const hdrs: Record<string, string> = {};
             res.headers.forEach((v, k) => (hdrs[k] = v));
             setHeaders(hdrs);
-
-
             const ct = res.headers.get('content-type') || '';
             setContentType(ct);
 
-
-// HTML の場合は blob を作って sandboxed iframe に流し込む（スクリプトは実行しない）
+            // -------------------------------------------------------------
+            // 【最重要変更点】HTMLの場合の Blob 作成処理を削除
+            // -------------------------------------------------------------
             if (ct.includes('text/html')) {
-                const text = await res.text();
-                const blob = new Blob([text], {type: 'text/html'});
-                const blobUrl = URL.createObjectURL(blob);
-                setIframeSrc(blobUrl);
-                setBodyText(null);
-            } else if (ct.startsWith('text/') || ct.includes('json')) {
-                const text = await res.text();
-                setBodyText(text);
+                // HTML の場合は Blob にせず、計算したプロキシURLを iframe の src に直接設定
+                setIframeSrc(proxiedUrl);
+                setBodyText(null); // 生のHTML表示は、Blobからでは不可能になるためクリア
             } else {
-// バイナリ等はダウンロードリンクとして扱う
-                const arrayBuf = await res.arrayBuffer();
-                const blob = new Blob([arrayBuf], {type: ct || 'application/octet-stream'});
-                const blobUrl = URL.createObjectURL(blob);
-                setBodyText(`ダウンロード: ${blobUrl}`);
-                setIframeSrc(blobUrl);
+                // 非HTMLの場合は、元の処理（ダウンロードなど）
+                setIframeSrc(proxiedUrl);
+                // ... (必要に応じて bodyText を設定するロジックを修正)
             }
         } catch (err: any) {
             console.error(err);

@@ -1,5 +1,6 @@
 // app/api/proxy/route.ts
-import { NextRequest, NextResponse } from 'next/server';
+import {NextRequest, NextResponse} from 'next/server';
+import * as cheerio from 'cheerio';
 
 export const runtime = 'nodejs';
 
@@ -19,103 +20,84 @@ function makeProxyUrl(targetHref: string) {
     return `/api/proxy?url=${encodeURIComponent(targetHref)}`;
 }
 
-// 簡易 HTML リライト（href/src/srcset/action/formのaction、<base>処理など）
-// この関数は完全な HTMLRewriter の代替ではありませんが多くのケースで動作します。
-// 注意: 大量置換は誤置換を招くため、必要に応じて DOM パーサに置き換えてください。
-function rewriteHtml(baseUrl: string, html: string) {
-    // resolve relative URLs to absolute using URL constructor
-    const base = new URL(baseUrl);
-
-    // attributes to rewrite: href, src, action, data-src, poster, srcset (handled separately)
-    // rewrite absolute and relative URLs that start with http/https or are relative paths
-    // simple regex-based approach:
-    //  - href="...": replace with proxy URL
-    //  - src="..."
-    //  - action="..."
-    //  - srcset="..." -> each url in srcset should be rewritten
-
-    // helper to resolve and wrap as proxy
-    function resolveAndProxy(urlStr: string) {
-        try {
-            const trimmed = urlStr.trim();
-            // ignore data:, mailto:, javascript:
-            if (/^data:|^mailto:|^javascript:/i.test(trimmed)) return urlStr;
-            // absolute?
-            const resolved = new URL(trimmed, base).href;
-            return makeProxyUrl(resolved);
-            // eslint-disable-next-line @typescript-eslint/no-unused-vars
-        } catch (e) {
-            return urlStr;
-        }
+function resolveAndProxy(val: string, base: URL) {
+    // val が空、data:、mailto:、# で始まる場合はプロキシしない
+    if (!val || val.startsWith('data:') || val.startsWith('mailto:') || val.startsWith('#')) {
+        return val;
     }
-
-    html = html.replace(/(fetch\s*\(['"])(.*?)['"]\s*\)/gms, (_, p1, p2) => {
-        try {
-            const prox = resolveAndProxy(p2);
-            return `${p1}${prox}"`;
-        } catch {
-            return `${p1}${p2}"`;
-        }
-    });
-
-    html = html.replace(/(open\s*\(['"](GET|POST)['"]\s*,\s*['"])(.*?)['"]\s*,\s*\)/gmis, (_, p1, p2, p3) => {
-        try {
-            const prox = resolveAndProxy(p3);
-            return `${p1}${p2}','${prox}',`;
-        } catch {
-            return `${p1}${p2}','${p3}',`;
-        }
-    });
-
-    // srcset handling: multiple comma-separated entries url [space descriptor]
-    html = html.replace(/srcset\s*=\s*"(.*?)"/gms, (_, val) => {
-        try {
-            const parts = val.split(',');
-            const newParts = parts.map((p: string) => {
-                const m = p.trim().match(/^(.*?)((\s+\d+\w?)?)$/);
-                if (!m) return p;
-                const urlPart = m[1];
-                const desc = m[2] ?? '';
-                const prox = resolveAndProxy(urlPart);
-                return `${prox}${desc}`;
-            });
-            return `srcset="${newParts.join(', ')}"`;
-        } catch {
-            return `srcset="${val}"`;
-        }
-    });
-
-    // generic attribute rewrites
-    const attrList = ['href', 'src', 'action', 'poster', 'data-src', 'data-href'];
-    for (const attr of attrList) {
-        const re = new RegExp(`${attr}\\s*=\\s*"(.*?)"`, 'gms');
-        html = html.replace(re, (_, val) => {
-            const prox = resolveAndProxy(val);
-            return `${attr}="${prox}"`;
-        });
-    }
-
-    // <base href="..."> がある場合, rewrite it to point to proxied base so relative resolves
-    html = html.replace(/<base\s+[^>]*href\s*=\s*"(.*?)"[^>]*>/gms, (_, val) => {
-        const prox = resolveAndProxy(val);
-        return `<base href="${prox}">`;
-    });
-
-    // rewrite locations in simple inline JS patterns: location.href = '...'; location = '...'
-    // NOTE: this is heuristic and limited.
-    html = html.replace(/(location(?:\.href|\.assign)?\s*=\s*['"])(.*?)['"]/gms, (_, p1, p2) => {
-        try {
-            const prox = resolveAndProxy(p2);
-            return `${p1}${prox}"`;
-        } catch {
-            return `${p1}${p2}"`;
-        }
-    });
-
-    return html;
+    // 相対URLを絶対URLに解決
+    const url = new URL(val, base.href);
+    // プロキシURL形式に変換
+    return makeProxyUrl(url.href);
 }
 
-// copy a subset of incoming headers to upstream. Don't forward host or connection.
+
+function rewriteHtml(baseUrl: string, html: string): string {
+    const base = new URL(baseUrl);
+    const $ = cheerio.load(html); // 👈 HTMLをパースしてDOMを構築
+
+    // -----------------------------------------------------------------
+    // 1. 【pushState, SyntaxError 対策】baseタグの強制挿入と既存タグ削除
+    // -----------------------------------------------------------------
+    // 既存の <base> タグを全て削除
+    $('base').remove();
+
+    // <head> タグを見つけ、プロキシURLを指す新しい <base> タグを先頭に挿入
+    const proxiedBaseUrl = makeProxyUrl(baseUrl);
+    const baseTag = `<base href="${proxiedBaseUrl}">`;
+    $('head').prepend(baseTag);
+
+    // -----------------------------------------------------------------
+    // 2. 【CORS, リンク切れ対策】すべてのURL属性をプロキシURLに書き換え
+    // -----------------------------------------------------------------
+    // 書き換え対象の属性リスト
+    const attrList = ['href', 'src', 'action', 'poster', 'data-src', 'data-href', 'srcset'];
+
+    // すべての要素に対して反復処理
+    $('*').each((i, element) => {
+        const $el = $(element);
+
+        // 各属性をチェック
+        for (const attr of attrList) {
+            const val = $el.attr(attr);
+            if (val) {
+                try {
+                    const proxied = resolveAndProxy(val, base);
+                    // 書き換え後の値が元の値と異なる場合のみ設定
+                    if (proxied !== val) {
+                        $el.attr(attr, proxied);
+                    }
+                } catch (e) {
+                    // URL解決に失敗した場合は無視
+                    console.warn(`Failed to resolve URL for ${attr}: ${val}`, e);
+                }
+            }
+        }
+    });
+
+    // -----------------------------------------------------------------
+    // 3. 【SecurityError 対策】危険なJavaScriptコードの無効化
+    // -----------------------------------------------------------------
+    // History API や document.domain の操作は Blob/iframe 環境でエラーになるため、
+    // これらの関数呼び出しを含むインラインスクリプトを安全のためブロックまたは変更します。
+    // *cheerioではJSコード内の文字列リライトは困難なため、ここでは document.domain の除去のみ*
+
+    /*
+    $('script').each((i, element) => {
+        const $script = $(element);
+        let content = $script.html();
+        if (content) {
+            // document.domain の設定をコメントアウト (SecurityError回避)
+            content = content.replace(/document\.domain\s*=\s*['"][^'"]+['"];?/gi, '// blocked document.domain setting;');
+            $script.html(content);
+        }
+    });
+     */
+
+    // 最終的なHTMLを文字列として出力
+    return $.html();
+}
+
 function buildForwardHeaders(req: NextRequest) {
     const out = new Headers();
     const forwardKeys = ['accept', 'accept-language', 'content-type', 'cookie', 'user-agent', 'referer', 'range'];
@@ -181,8 +163,7 @@ async function handleProxy(req: NextRequest) {
 
         if (req.method !== 'GET' && req.method !== 'HEAD' && req.body) {
             // forward body (arrayBuffer supported)
-            const ab = await req.arrayBuffer();
-            fetchOpts.body = ab;
+            fetchOpts.body = await req.arrayBuffer();
         }
 
         const upstream = await fetch(target.href, fetchOpts);
@@ -233,6 +214,8 @@ async function handleProxy(req: NextRequest) {
     style-src 'self' data: http: https: 'unsafe-inline';
     img-src 'self' data: http: https: *;
     media-src 'self' data: http: https: *;
+    frame-src 'self' data: http: https: wss: *;
+    content-src 'self' data: http: https: wss: wss: *;
 `;
 // 複数スペースと改行を削除して1行にする
         const cleanCSP = newCSP.replace(/\s+/g, ' ').trim();
@@ -245,22 +228,15 @@ async function handleProxy(req: NextRequest) {
         if (resHeaders.has('content-encoding')) resHeaders.delete('content-encoding');
 
 // Frame埋め込み制限を削除
-        if (resHeaders.has('x-frame-options')) resHeaders.delete('x-frame-options');
+        //if (resHeaders.has('x-frame-options')) resHeaders.delete('x-frame-options');
 
 // セキュリティヘッダ調整終わり
 // -----------------------------------------------
 
-// あとは元のステータス・ヘッダ・本文をそのまま返す
-        return new Response(upstream.body, {
-            status: upstream.status,
-            headers: resHeaders,
-        });
         // Relay Set-Cookie headers (keep them)
         const setCookie = upstream.headers.get('set-cookie');
         if (setCookie) {
             // NextResponse can't set multiple Set-Cookie via headers.set; use the Response constructor below
-            // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-            // @ts-expect-error
             resHeaders.set('set-cookie', setCookie);
         }
 
@@ -276,20 +252,14 @@ async function handleProxy(req: NextRequest) {
             const chunks: Uint8Array[] = [];
             let received = 0;
             while (true) {
-                // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-                // @ts-expect-error
                 const { done, value } = await reader.read();
                 if (done) break;
                 if (value) {
-                    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-                    // @ts-expect-error
                     received += value.byteLength;
                     if (received > MAX_BODY_BYTES) {
                         controller.abort();
                         return NextResponse.json({ error: 'upstream html too large' }, { status: 502 });
                     }
-                    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-                    // @ts-expect-error
                     chunks.push(value);
                 }
             }
@@ -317,6 +287,7 @@ async function handleProxy(req: NextRequest) {
             status: upstream.status,
             headers: resHeaders,
         });
+
     } catch (err: unknown) {
         clearTimeout(timeout);
         if (err instanceof Error && err.name === 'AbortError') {
