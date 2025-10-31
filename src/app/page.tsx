@@ -1,5 +1,5 @@
 'use client';
-import React, {useState} from 'react';
+import React, {useEffect, useState} from 'react';
 
 
 export default function HomePage() {
@@ -11,6 +11,14 @@ export default function HomePage() {
     const [contentType, setContentType] = useState<string | null>(null);
     const [iframeSrc, setIframeSrc] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
+
+    useEffect(() => {
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/sw.js', {scope: '/'})
+                .then(registration => console.log('Service Worker successfully registered:', registration))
+                .catch(error => console.log('Service Worker error:',error));
+        }
+    }, []);
 
 
     async function handleFetch(e?: React.FormEvent) {
@@ -111,7 +119,7 @@ export default function HomePage() {
                     <strong>HTML プレビュー</strong>
                     <div style={{border: '1px solid #ddd', marginTop: 8}}>
                         <iframe src={iframeSrc} style={{width: '100%', height: 600}}
-                                sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-popups-to-escape-sandbox"></iframe>
+                                sandbox="allow-scripts allow-forms allow-popups allow-modals allow-popups-to-escape-sandbox"></iframe>
                     </div>
                 </div>
             )}
