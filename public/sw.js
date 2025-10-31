@@ -1,59 +1,98 @@
 // プロキシエンドポイントのパスを設定
 const PROXY_PATH = '/api/proxy';
 // YouTubeドメインをターゲットに設定
-const TARGET_HOSTNAMES = ['www.youtube.com', 'm.youtube.com', 's.youtube.com', 'i.ytimg.com'];
+const TARGET_HOSTNAMES = [
+    'www.youtube.com',
+    'm.youtube.com',
+    's.youtube.com',
+    'i.ytimg.com',
+    'yt3.ggpht.com',
+    'googlevideo.com', // 👈 動画ストリーミングに不可欠
+    'www.google.com', // 👈 認証やAPI関連
+    'accounts.google.com', // 👈 認証関連
+];
 
 self.addEventListener('fetch', (event) => {
-    const url = new URL(event.request.url);
+    const request = event.request;
+    const url = new URL(request.url);
 
-    // 1. Service Worker自身へのリクエストや、オリジン外のリクエストを無視
-    if (url.origin !== self.location.origin) {
+    // 1. Service Worker が処理すべきリクエストか判断
+
+    // 1a. このオリジン (セルフ) へのリクエストか？
+    if (url.origin === self.location.origin) {
+        // (A) /api/proxy へのリクエストは絶対に傍受しない (無限ループ回避)
+        if (url.pathname === PROXY_PATH || url.pathname.startsWith(PROXY_PATH + '/')) {
+            return;
+        }
+        // (B) その他のローカルリソース (/page.tsx, /sw.js など) はそのまま通す
+        // (キャッシュ戦略が必要ならここに追加)
         return;
     }
 
-    // 2. プロキシ対象のホスト名チェック
-    // パスから元のURLをデコードしてホスト名を取得
-    const isProxyRequest = url.pathname === PROXY_PATH;
+    // 1b. 外部オリジンへのリクエストか？
+    // (例: iframe 内のJSが 'https://www.youtube.com/api/...' を叩いた)
 
-    // プロキシリクエストではない、かつ、ターゲットドメインへのリクエストではない場合は無視
-    if (!isProxyRequest) {
-        // iframeでロードされたコンテンツから、直接 YouTube へのリクエストを捕捉する
-        // ただし、このService Workerはメインオリジンでのみ動くため、
-        // 実際にはiframe内のリソースがプロキシを経由してロードされた後の内部リンクを捕捉します。
+    // 2. 外部オリジンのうち、プロキシ対象かチェック
+    const isTarget = TARGET_HOSTNAMES.some(host =>
+        url.hostname === host || url.hostname.endsWith('.' + host)
+    );
 
-        // ターゲットドメインへのリクエストかどうかを正確に判断するのは難しいため、
-        // ここでは単純に *メインオリジン外* へのリクエストをプロキシに送る戦略を取ります。
-
-        // **最もシンプルなアプローチ:** /api/proxy 以外のリクエストはそのまま通す
+    if (!isTarget) {
+        // プロキシ対象外の外部ドメイン (例: google-analytics.com) は
+        // そのままリクエストさせる (CORSで失敗する可能性大だが、SWの責任外)
         return;
     }
 
-    // 3. 捕捉したプロキシリクエストを処理
-    // Service Workerは、プロキシとして動作するよう強制的にリクエストを書き換えます。
+    // 3. 捕捉したリクエストをプロキシURLに書き換える
+    // (例: https://www.youtube.com/api/... -> /api/proxy?url=https%3A%2F%2Fwww.youtube.com%2Fapi%2F...)
+    const proxiedUrl = `${self.location.origin}${PROXY_PATH}?url=${encodeURIComponent(request.url)}`;
 
-    // 【重要】
-    // このsw.jsは、iframe内のYouTubeコンテンツから送られた
-    // 「/api/proxy?url=https%3A%2F%2Fwww.youtube.com%2F...」
-    // のようなリクエストを処理します。これは既にプロキシURLなので、そのまま通します。
+    // 4. 新しいリクエストを作成し、プロキシ経由で実行
+    event.respondWith(
+        (async () => {
+            try {
+                // 元のリクエストのオプションをコピー
+                const init: RequestInit = {
+                    method: request.method,
+                    headers: request.headers,
+                    // 'GET', 'HEAD' 以外の場合はボディをクローンして渡す
+                    body: (request.method !== 'GET' && request.method !== 'HEAD') ? await request.clone().arrayBuffer() : undefined,
+                    mode: 'same-origin', // /api/proxy は同一オリジン
+                    credentials: request.credentials,
+                    cache: request.cache,
+                    redirect: request.redirect,
+                    referrer: request.referrer,
+                };
 
-    // **真の課題は、ページ内のJSから発せられる *元の* https://www.youtube.com/api/... リクエストを捕捉し書き換えることです。**
+                // 元のリクエストの AbortSignal を引き継ぐ
+                if (request.signal) {
+                    init.signal = request.signal;
+                }
 
-    // 💡 解決策: Iframeのsandbox属性から 'allow-same-origin' を外す
-    // `page.tsx` で `sandbox` 属性から `allow-same-origin` を外すと、
-    // iframe内のJavaScriptが直接親オリジン (/api/proxy) にリクエストできなくなり、
-    // すべての外部リソースがプロキシを経由することが保証されます。
+                // プロキシエンドポイント (/api/proxy) にフェッチ
+                const response = await fetch(proxiedUrl, init);
 
-    // しかし、iframeが完全に隔離されると、検索フォームの送信自体ができなくなる可能性もあります。
+                // プロキシからのレスポンスをそのまま返す
+                return response;
 
-    // Service Workerによる透過的リライトが機能するのは、
-    // Service Workerが登録されたオリジンから発信されるリクエスト（親ページから or 同一オリジンのiframeから）のみです。
+            } catch (error: any) {
+                console.error(`SW: Proxy fetch failed for: ${request.url}`, error);
+                // エラーが発生した場合、ネットワークエラーを返す
+                return new Response(`Service Worker: Failed to proxy request to ${proxiedUrl}. Error: ${error?.message || error}`, {
+                    status: 502, // Bad Gateway
+                    statusText: 'Bad Gateway (SW Proxy Error)',
+                });
+            }
+        })()
+    );
+});
 
-    // この Service Worker は、メインページ (`page.tsx`) が発するリクエストをコントロールします。
-    // iframe内のJSリクエストを捕捉するには、iframeのドメインと Service Workerのスコープを一致させる必要がありますが、
-    // 現在の設計ではそれは不可能です。
+self.addEventListener('activate', (event) => {
+    // Service Worker がアクティブになったら、すぐにクライアントを制御下に置く
+    event.waitUntil(self.clients.claim());
+});
 
-    // したがって、**Service Workerは、この問題の直接的な解決策にはなりません。**
-    // 理由：Service Workerはメインドメインにしか登録できず、**iframe内部から外部ドメイン（YouTube）へのリクエスト**を捕捉できないためです。
-
-    // 代替策（#4へ）
+self.addEventListener('install', (event) => {
+    // インストール後、すぐにアクティブにする (古いSWを待たない)
+    event.waitUntil(self.skipWaiting());
 });

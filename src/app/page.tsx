@@ -119,7 +119,7 @@ export default function HomePage() {
                     <strong>HTML プレビュー</strong>
                     <div style={{border: '1px solid #ddd', marginTop: 8}}>
                         <iframe src={iframeSrc} style={{width: '100%', height: 600}}
-                                sandbox="allow-scripts allow-forms allow-popups allow-modals allow-popups-to-escape-sandbox"></iframe>
+                                sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-popups-to-escape-sandbox"></iframe>
                     </div>
                 </div>
             )}
